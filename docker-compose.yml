@@ -1,0 +1,29 @@
+# Research with Receipts — local compose
+# Orchestrator runs on the host/VM; it spawns sandbox containers via `docker run --rm`.
+# This file documents and builds images; it does not keep a long-lived browser service.
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
+    volumes:
+      # Docker socket so orchestrator can `docker run` sandboxes (dev only; harden in prod)
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./screenshots:/app/screenshots
+    environment:
+      - PORT=8080
+    # Do NOT put inference secrets into any sandbox service below.
+
+  sandbox:
+    # Build-only helper image used by app/sandbox_runner.py (`docker run --rm ...`)
+    build:
+      context: .
+      dockerfile: docker/sandbox/Dockerfile
+    image: research-with-receipts-sandbox:latest
+    profiles:
+      - build-only
