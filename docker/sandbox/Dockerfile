@@ -1,7 +1,13 @@
-# Minimal Playwright sandbox for Research with Receipts (Pattern B)
+# Playwright sandbox for Research with Receipts (Pattern B).
+# The base image ships Chromium/Firefox/WebKit under /ms-playwright but not
+# the Python package. Pin the package to the same version so `playwright install`
+# is not run again inside the image.
 FROM mcr.microsoft.com/playwright/python:v1.48.0-jammy
 
 WORKDIR /sandbox
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN pip install --no-cache-dir "playwright==1.48.0"
 
 COPY sandbox/worker.py /sandbox/worker.py
 
