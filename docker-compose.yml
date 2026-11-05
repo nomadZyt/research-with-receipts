@@ -1,6 +1,9 @@
 # Research with Receipts — local compose
-# Orchestrator runs on the host/VM; it spawns sandbox containers via `docker run --rm`.
-# This file documents and builds images; it does not keep a long-lived browser service.
+# `docker compose up --build` builds the Playwright image, tags it
+# research-with-receipts-sandbox:latest, and starts the orchestrator.
+# The sandbox service exits immediately; each research job is a separate
+# `docker run --rm` started by app/sandbox_runner.py.
+# Do not put VULTR_INFERENCE_API_KEY into the sandbox container.
 
 services:
   orchestrator:
@@ -9,21 +12,37 @@ services:
       dockerfile: Dockerfile.orchestrator
     ports:
       - "${PORT:-8080}:8080"
-    env_file:
-      - .env
     volumes:
-      # Docker socket so orchestrator can `docker run` sandboxes (dev only; harden in prod)
+      # Docker socket so the orchestrator can start sandboxes (dev only).
       - /var/run/docker.sock:/var/run/docker.sock
       - ./screenshots:/app/screenshots
+      # Shared with the host daemon so `docker run -v` sees job files.
+      - ./var/sandbox-jobs:/sandbox-jobs
     environment:
-      - PORT=8080
-    # Do NOT put inference secrets into any sandbox service below.
+      PORT: "8080"
+      SCREENSHOTS_DIR: /app/screenshots
+      SANDBOX_JOBS_DIR: /sandbox-jobs
+      HOST_SANDBOX_JOBS_DIR: ${HOST_SANDBOX_JOBS_DIR:-}
+      SANDBOX_IMAGE: research-with-receipts-sandbox:latest
+      SANDBOX_TIMEOUT_SEC: ${SANDBOX_TIMEOUT_SEC:-120}
+      SANDBOX_MEMORY_MB: ${SANDBOX_MEMORY_MB:-1024}
+      SANDBOX_CPUS: ${SANDBOX_CPUS:-1}
+      SANDBOX_SHM_SIZE: ${SANDBOX_SHM_SIZE:-256m}
+      SANDBOX_NETWORK: ${SANDBOX_NETWORK:-bridge}
+      VULTR_INFERENCE_API_KEY: ${VULTR_INFERENCE_API_KEY:-}
+      VULTR_INFERENCE_BASE_URL: ${VULTR_INFERENCE_BASE_URL:-https://api.vultrinference.com/v1}
+      VULTR_INFERENCE_MODEL: ${VULTR_INFERENCE_MODEL:-}
+      VULTR_API_KEY: ${VULTR_API_KEY:-}
+    depends_on:
+      sandbox:
+        condition: service_completed_successfully
 
   sandbox:
-    # Build-only helper image used by app/sandbox_runner.py (`docker run --rm ...`)
     build:
       context: .
       dockerfile: docker/sandbox/Dockerfile
     image: research-with-receipts-sandbox:latest
-    profiles:
-      - build-only
+    # Image check only. Real visits use the image CMD (`python worker.py`).
+    command: ["python", "-c", "print('sandbox image ready')"]
+    restart: "no"
+    network_mode: "none"

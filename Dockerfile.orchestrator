@@ -2,8 +2,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# docker.io is the engine libs; Debian's slim image does not pull the CLI
+# unless docker-cli is named. The orchestrator only needs the client.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    docker.io \
+    docker-cli \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
