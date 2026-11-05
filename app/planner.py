@@ -145,6 +145,24 @@ def _matches(text: str, keyword: str) -> bool:
     return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
 
 
+def _route_rows(question: str) -> tuple[_VisitRow, ...] | None:
+    text = _normalize(question)
+    for keywords, route in _ROUTES:
+        if any(_matches(text, keyword) for keyword in keywords):
+            return route
+    return None
+
+
+def stub_can_source(question: str) -> bool:
+    """True when the stub has a real page for this question.
+
+    Questions that miss ``_ROUTES`` are not given the hash-fallback URLs by
+    ``POST /api/research``. Those fallbacks stay available from ``/api/plan``
+    for the D2 planner contract, and they are never turned into claims.
+    """
+    return _route_rows(question) is not None
+
+
 def _visits(rows: tuple[_VisitRow, ...] | list[_VisitRow]) -> list[PlannedVisit]:
     return [
         PlannedVisit(url=url, purpose=purpose, expected_claim=expected)
@@ -163,12 +181,7 @@ def _fallback_rows(question: str) -> tuple[_VisitRow, _VisitRow]:
 
 def plan_with_stub(question: str, *, note: str = _STUB_NOTE) -> ResearchPlan:
     """Deterministic plan. Does not call the network or read an API key."""
-    text = _normalize(question)
-    rows: tuple[_VisitRow, ...] | list[_VisitRow] = ()
-    for keywords, route in _ROUTES:
-        if any(_matches(text, keyword) for keyword in keywords):
-            rows = route
-            break
+    rows: tuple[_VisitRow, ...] | list[_VisitRow] | None = _route_rows(question)
     if not rows:
         rows = _fallback_rows(question)
     return ResearchPlan(

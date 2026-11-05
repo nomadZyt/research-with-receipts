@@ -16,6 +16,7 @@ does not pass that variable in.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,6 +89,29 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def scrub_process_env(env: dict[str, str] | None = None) -> list[str]:
+    """Drop secret variables if a caller injected them into this process.
+
+    The host whitelist is the real boundary. This is defense in depth for a
+    container that was started with a leaked ``-e`` or ``--env-file``.
+    """
+    target: dict[str, str] = os.environ if env is None else env
+    removed: list[str] = []
+    for key in list(target):
+        upper = key.upper()
+        if (
+            upper.startswith("VULTR_")
+            or "SECRET" in upper
+            or "TOKEN" in upper
+            or "PASSWORD" in upper
+            or "API_KEY" in upper
+            or "CREDENTIAL" in upper
+        ):
+            target.pop(key, None)
+            removed.append(key)
+    return removed
+
+
 def visit(page: Any, index: int, url: str) -> dict[str, Any]:
     captured_at = now_iso()
     item: dict[str, Any] = {
@@ -147,6 +171,7 @@ def visit(page: Any, index: int, url: str) -> dict[str, Any]:
 
 def main() -> int:
     # Do not read inference or cloud API keys. The host must not pass them in.
+    scrub_process_env()
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
