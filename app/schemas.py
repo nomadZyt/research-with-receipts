@@ -2,8 +2,9 @@
 
 A claim can be returned only when it names what was claimed, the source
 URL, a quote, and a screenshot receipt with timestamps. ``POST /api/research``
-builds claims through these models. ``POST /api/claims/validate`` checks the
-same shape without running the sandbox.
+returns a claim only after that quote is verified and the PNG is on disk.
+``status=refused`` carries refusal text and zero claims. ``POST /api/claims/validate``
+checks the claim shape without running the sandbox or opening the PNG.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from enum import Enum
 from typing import Optional
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MAX_URLS = 5
 MAX_QUESTION_LEN = 2000
@@ -25,9 +26,17 @@ class PlannerKind(str, Enum):
 
 
 class Verdict(str, Enum):
-    pending_vision_check = "pending_vision_check"
+    """Only ``supported`` claims are returned by ``POST /api/research``."""
+
     supported = "supported"
     unsupported = "unsupported"
+
+
+class VerifierKind(str, Enum):
+    """How a returned claim's quote was checked against its receipt."""
+
+    text = "text"
+    vision = "vision"
 
 
 def ensure_utc(value: datetime) -> datetime:
@@ -106,6 +115,8 @@ class ScreenshotReceipt(BaseModel):
     relative_path: str
     title: Optional[str] = None
     quote: Optional[str] = None
+    # Full captured page text. Quote checks look here, not only at ``quote``.
+    page_text: Optional[str] = Field(default=None, max_length=4000)
     captured_at: datetime
     byte_size: int = Field(..., ge=0)
     ok: bool
@@ -147,7 +158,10 @@ class Claim(BaseModel):
     captured_at: datetime
     created_at: datetime
     source_title: Optional[str] = None
-    verdict: Verdict = Verdict.pending_vision_check
+    # Research responses only include ``supported``. ``unsupported`` is the
+    # schema default so an unverified object is not treated as checked.
+    verdict: Verdict = Verdict.unsupported
+    verifier: Optional[VerifierKind] = None
 
     @field_validator("url")
     @classmethod
@@ -195,6 +209,17 @@ class ResearchResponse(BaseModel):
     claims: list[Claim] = Field(default_factory=list)
     receipts: list[ScreenshotReceipt] = Field(default_factory=list)
     refusal: Optional[str] = None
+    # unsourceable: no page was opened. unverified: receipts failed the
+    # quote check. no_receipt: the sandbox produced no PNG.
+    refusal_code: Optional[str] = Field(
+        default=None,
+        pattern="^(unsourceable|unverified|no_receipt)$",
+    )
+    # text, vision, or mixed — set when a quote check actually ran.
+    verification: Optional[str] = Field(
+        default=None,
+        pattern="^(text|vision|mixed)$",
+    )
     note: Optional[str] = None
     sandbox_id: Optional[str] = None
     destroyed: bool = False
@@ -204,6 +229,25 @@ class ResearchResponse(BaseModel):
     @classmethod
     def planned_at_utc(cls, value: datetime) -> datetime:
         return ensure_utc(value)
+
+    @model_validator(mode="after")
+    def refuse_or_verified_claims(self) -> ResearchResponse:
+        if self.status == "refused":
+            if self.claims:
+                raise ValueError("a refusal cannot include claims")
+            if not (self.refusal and self.refusal.strip()):
+                raise ValueError("a refusal needs refusal text")
+            return self
+        if not self.claims:
+            raise ValueError("status ok requires at least one verified claim")
+        if self.refusal:
+            raise ValueError("status ok cannot include a refusal")
+        for claim in self.claims:
+            if claim.verdict != Verdict.supported:
+                raise ValueError("only supported claims may be returned")
+            if claim.verifier is None:
+                raise ValueError("supported claims need a verifier")
+        return self
 
 
 class SandboxRunResponse(BaseModel):

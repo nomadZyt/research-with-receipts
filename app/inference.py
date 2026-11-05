@@ -39,7 +39,7 @@ def _redact(text: str) -> str:
     return text[:300]
 
 
-def complete_chat(messages: list[dict[str, str]], *, temperature: float = 0) -> str:
+def complete_chat(messages: list[dict[str, Any]], *, temperature: float = 0) -> str:
     """Return assistant text from Vultr Serverless Inference.
 
     Raises InferenceNotConfigured when the key is empty (no HTTP call).
@@ -85,6 +85,14 @@ def complete_chat(messages: list[dict[str, str]], *, temperature: float = 0) -> 
     except Exception as exc:
         raise InferenceError(f"Vultr Inference request failed: {_redact(str(exc))}") from exc
 
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        content = "".join(parts)
     if not isinstance(content, str) or not content.strip():
         raise InferenceError("Vultr Inference returned an empty completion.")
     return content

@@ -20,6 +20,24 @@ curl -fsS "${BASE}/api/plan" \
 echo
 echo
 
+echo "=== POST /api/research fictional question (must refuse, zero claims) ==="
+REFUSED="$(curl -fsS "${BASE}/api/research" \
+  -H 'content-type: application/json' \
+  -d '{"question":"When was the city of Zorblax founded?"}')"
+echo "${REFUSED}"
+echo
+
+python3 - <<'PY' "${REFUSED}"
+import json, sys
+body = json.loads(sys.argv[1])
+if body.get("status") != "refused" or body.get("claims"):
+    raise SystemExit("expected a refusal with no claims: " + json.dumps(body)[:800])
+if body.get("refusal_code") != "unsourceable":
+    raise SystemExit("expected refusal_code=unsourceable")
+print("refused", body.get("refusal_code"))
+PY
+
+echo
 echo "=== POST /api/sandbox/run (Playwright receipts) ==="
 SANDBOX="$(curl -fsS "${BASE}/api/sandbox/run" \
   -H 'content-type: application/json' \
@@ -40,7 +58,7 @@ echo
 echo "=== POST /api/claims/validate ==="
 curl -fsS "${BASE}/api/claims/validate" \
   -H 'content-type: application/json' \
-  -d '{"claim_id":"clm-smoke000001","claim":"example.com is reserved for examples.","url":"https://example.com/","quote":"Example Domain","screenshot_id":"rwr-0123456789ab-0","screenshot_path":"screenshots/rwr-0123456789ab/0.png","captured_at":"2026-11-04T03:00:00Z","created_at":"2026-11-04T03:00:01Z","verdict":"pending_vision_check"}'
+  -d '{"claim_id":"clm-smoke000001","claim":"example.com is reserved for examples.","url":"https://example.com/","quote":"Example Domain","screenshot_id":"rwr-0123456789ab-0","screenshot_path":"screenshots/rwr-0123456789ab/0.png","captured_at":"2026-11-04T03:00:00Z","created_at":"2026-11-04T03:00:01Z","verdict":"supported","verifier":"text"}'
 echo
 echo
 echo "Screenshots are files under ./screenshots/<sandbox_id>/*.png"

@@ -5,10 +5,57 @@
 
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${ROOT}"
+
 IMAGE="${SANDBOX_IMAGE:-research-with-receipts-sandbox:latest}"
 NAME="rwr-containment-demo-$$"
 
 echo "=== Research with Receipts — containment demo ==="
+echo "0) Sandbox env whitelist (no Docker, no live Inference call)."
+if ! python3 -c "import pydantic" >/dev/null 2>&1; then
+  echo "Install dependencies first: pip install -r requirements.txt"
+  exit 1
+fi
+export VULTR_INFERENCE_API_KEY="containment-demo-secret"
+PYTHONPATH="${ROOT}" python3 - <<'PY'
+import os
+from pathlib import Path
+
+from app.sandbox_runner import (
+    build_docker_command,
+    container_env_flags,
+    docker_cli_env,
+)
+
+secret = os.environ["VULTR_INFERENCE_API_KEY"]
+flags = container_env_flags()
+blob = " ".join(flags)
+cli = docker_cli_env()
+cmd = build_docker_command(
+    sandbox_id="rwr-demo0000001",
+    host_job=Path("/tmp/job"),
+    settings={
+        "image": "research-with-receipts-sandbox:latest",
+        "memory_mb": 128,
+        "cpus": "1",
+        "network": "none",
+        "shm": "64m",
+    },
+)
+command = " ".join(cmd)
+assert "VULTR_INFERENCE_API_KEY" not in blob, blob
+assert secret not in blob
+assert "VULTR_INFERENCE_API_KEY" not in cli
+assert secret not in " ".join(cli.values())
+assert secret not in command
+assert "VULTR_INFERENCE_API_KEY" not in command
+assert "--env-file" not in cmd
+assert "HOME=/tmp" in flags
+print("whitelist ok:", blob)
+PY
+unset VULTR_INFERENCE_API_KEY
+echo
 echo "1) Inference API key must NEVER appear in sandbox env."
 echo "   Orchestrator keeps VULTR_INFERENCE_API_KEY on the VM only."
 echo "   sandbox_runner.py does not pass that variable via docker -e."

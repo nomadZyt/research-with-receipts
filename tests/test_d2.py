@@ -32,7 +32,8 @@ def _valid_claim(**overrides: object) -> dict[str, object]:
         "captured_at": "2026-11-04T03:00:00Z",
         "created_at": "2026-11-04T03:00:01Z",
         "source_title": "Example Domain",
-        "verdict": "pending_vision_check",
+        "verdict": "supported",
+        "verifier": "text",
     }
     payload.update(overrides)
     return payload
@@ -139,7 +140,8 @@ class D2ContractTests(unittest.TestCase):
     def test_claim_schema_requires_receipt_fields(self) -> None:
         ok = self.client.post("/api/claims/validate", json=_valid_claim())
         self.assertEqual(ok.status_code, 200, ok.text)
-        self.assertEqual(ok.json()["verdict"], "pending_vision_check")
+        self.assertEqual(ok.json()["verdict"], "supported")
+        self.assertEqual(ok.json()["verifier"], "text")
 
         missing = _valid_claim()
         del missing["screenshot_path"]
@@ -273,6 +275,10 @@ class D2ContractTests(unittest.TestCase):
                         "relative_path": f"screenshots/{sandbox_id}/0.png",
                         "title": "Example Domain",
                         "quote": "This domain is for use in illustrative examples.",
+                        "page_text": (
+                            "Example Domain This domain is for use in illustrative "
+                            "examples. You may use this domain in literature."
+                        ),
                         "captured_at": "2026-11-04T03:00:00+00:00",
                         "byte_size": png.stat().st_size,
                         "ok": True,
@@ -286,7 +292,8 @@ class D2ContractTests(unittest.TestCase):
         self.assertEqual(accepted.status, "ok")
         self.assertEqual(len(accepted.claims), 1)
         self.assertTrue(accepted.destroyed)
-        self.assertEqual(accepted.claims[0].verdict.value, "pending_vision_check")
+        self.assertEqual(accepted.claims[0].verdict.value, "supported")
+        self.assertEqual(accepted.claims[0].verifier.value, "text")
         shot = self.client.get(f"/api/screenshots/{accepted.sandbox_id}/0.png")
         self.assertEqual(shot.status_code, 200)
         self.assertEqual(shot.headers["content-type"], "image/png")
