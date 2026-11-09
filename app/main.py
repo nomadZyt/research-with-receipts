@@ -13,6 +13,7 @@ from app.inference import inference_configured
 from app.orchestrator import run_research, run_sandbox
 from app.planner import plan_research
 from app.sandbox_runner import screenshots_dir
+from app.verifier import verification_backend
 from app.schemas import (
     Claim,
     ResearchPlan,
@@ -29,10 +30,11 @@ app = FastAPI(
     description=(
         "Verifiable research briefs — no receipt, no answer. "
         "Blast Radius Zero / Pattern B. "
-        "D2 runs planning, a disposable Playwright sandbox, and claim validation. "
+        "D3 verifies each claim's quote against its screenshot receipt and "
+        "refuses when nothing verifiable remains. "
         "Vultr Serverless Inference stays unwired unless VULTR_INFERENCE_API_KEY is set."
     ),
-    version="0.2.0",
+    version="0.3.0",
 )
 
 _SANDBOX_ID = re.compile(r"rwr-[a-f0-9]{12}")
@@ -45,6 +47,7 @@ def health() -> dict[str, str]:
         "status": "ok",
         "service": "research-with-receipts",
         "inference": "configured" if inference_configured() else "stub",
+        "verification": verification_backend(),
     }
 
 
@@ -56,7 +59,11 @@ def plan(body: ResearchRequest) -> ResearchPlan:
 
 @app.post("/api/research", response_model=ResearchResponse)
 def research(body: ResearchRequest) -> ResearchResponse:
-    """Plan, screenshot each URL in the sandbox, and return claims that have receipts."""
+    """Plan, screenshot, verify quotes, and return only supported claims.
+
+    Unsourceable questions and failed quote checks return ``status=refused``
+    with an empty ``claims`` list.
+    """
     return run_research(body.question)
 
 
@@ -68,7 +75,7 @@ def sandbox_run(body: SandboxRunRequest) -> SandboxRunResponse:
 
 @app.post("/api/claims/validate", response_model=Claim)
 def validate_claim(body: Claim) -> Claim:
-    """Validate a claim. Schema only — does not check that the PNG is on disk."""
+    """Validate a claim shape. Does not read the PNG or run quote verification."""
     return body
 
 

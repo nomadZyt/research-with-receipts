@@ -2,7 +2,8 @@
 Spawn a disposable Playwright sandbox via `docker run --rm`.
 
 NEVER pass VULTR_INFERENCE_API_KEY (or other orchestrator secrets) into
-the container environment. Job I/O is bind-mounted under /job only.
+the container environment. ``container_env_flags`` is a fixed whitelist of
+literal values; host env is not copied. Job I/O is bind-mounted under /job only.
 Screenshots are copied out to screenshots/<sandbox_id>/<index>.png
 before the job directory is removed.
 """
@@ -44,6 +45,100 @@ def jobs_dir() -> Path:
 
 def _docker_available() -> bool:
     return shutil.which("docker") is not None
+
+
+# Container environment is this list and nothing else. Values are literals,
+# never copied from the host process. Secret names are rejected even if a
+# later edit adds them to the tuple.
+SANDBOX_ENV_WHITELIST: tuple[tuple[str, str], ...] = (
+    ("HOME", "/tmp"),
+    ("XDG_CACHE_HOME", "/tmp"),
+    ("XDG_CONFIG_HOME", "/tmp"),
+    ("PLAYWRIGHT_BROWSERS_PATH", "/ms-playwright"),
+)
+SANDBOX_ENV_DENY = frozenset(
+    {
+        "VULTR_INFERENCE_API_KEY",
+        "VULTR_API_KEY",
+        "VULTR_INFERENCE_MODEL",
+        "VULTR_INFERENCE_BASE_URL",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_ACCESS_KEY_ID",
+    }
+)
+_SECRET_MARKERS = ("SECRET", "TOKEN", "PASSWORD", "API_KEY", "CREDENTIAL")
+
+
+def _is_secret_env_name(name: str) -> bool:
+    upper = name.upper()
+    if upper in SANDBOX_ENV_DENY or upper.startswith("VULTR_"):
+        return True
+    return any(marker in upper for marker in _SECRET_MARKERS)
+
+
+def container_env_flags() -> list[str]:
+    """``docker run -e`` flags. Host environment is not consulted."""
+    flags: list[str] = []
+    for key, value in SANDBOX_ENV_WHITELIST:
+        if _is_secret_env_name(key) or not value or "\n" in value or "\x00" in value:
+            continue
+        flags.extend(["-e", f"{key}={value}"])
+    return flags
+
+
+def docker_cli_env() -> dict[str, str]:
+    """Environment for the docker *client* process, with secrets removed.
+
+    Docker does not copy this into the container unless ``-e`` / ``--env-file``
+    says so. ``build_docker_command`` does neither for secrets. Dropping the
+    keys here keeps them out of the client process as well.
+    """
+    secret_values = [
+        os.getenv(name, "").strip()
+        for name in ("VULTR_INFERENCE_API_KEY", "VULTR_API_KEY")
+    ]
+    secret_values = [value for value in secret_values if len(value) >= 8]
+    cleaned: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if _is_secret_env_name(key):
+            continue
+        if any(secret in value for secret in secret_values):
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def build_docker_command(
+    *,
+    sandbox_id: str,
+    host_job: Path,
+    settings: dict[str, Any],
+) -> list[str]:
+    """Assemble ``docker run`` without ``--env-file`` or host secret ``-e``."""
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        sandbox_id,
+        "--network",
+        str(settings["network"]),
+        "--memory",
+        f"{settings['memory_mb']}m",
+        "--cpus",
+        str(settings["cpus"]),
+        "--shm-size",
+        str(settings["shm"]),
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,nosuid,size=512m",
+        "-v",
+        f"{host_job}:/job",
+        *container_env_flags(),
+        str(settings["image"]),
+    ]
 
 
 def _settings() -> dict[str, Any]:
@@ -173,10 +268,16 @@ def publish_receipts(
             shutil.copyfile(png_path, target)
             byte_size = target.stat().st_size
             published = byte_size > 8 and not error_text
-        quote = meta.get("quote") or meta.get("text") or ""
-        if not isinstance(quote, str):
-            quote = str(quote)
-        quote = " ".join(quote.split())[:500] or None
+        raw_text = meta.get("text")
+        raw_quote = meta.get("quote")
+        if not isinstance(raw_text, str):
+            raw_text = "" if raw_text is None else str(raw_text)
+        if not isinstance(raw_quote, str):
+            raw_quote = "" if raw_quote is None else str(raw_quote)
+        if not raw_quote:
+            raw_quote = raw_text
+        quote = " ".join(raw_quote.split())[:500] or None
+        page_text = " ".join((raw_text or raw_quote).split())[:2000] or None
         title = meta.get("title")
         if title is not None:
             title = str(title)[:300] or None
@@ -190,6 +291,7 @@ def publish_receipts(
                 "relative_path": f"screenshots/{sandbox_id}/{index}.png",
                 "title": title,
                 "quote": quote,
+                "page_text": page_text,
                 "captured_at": _parse_captured_at(meta),
                 "byte_size": byte_size,
                 "ok": published,
@@ -249,36 +351,12 @@ def dispatch_sandbox(urls: list[str]) -> dict[str, Any]:
     )
     host_job = translate_to_docker_host_path(job_dir)
 
-    # Explicit env only. Do not forward the host environment or inference keys.
-    cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "--name",
-        sandbox_id,
-        "--network",
-        str(settings["network"]),
-        "--memory",
-        f"{settings['memory_mb']}m",
-        "--cpus",
-        str(settings["cpus"]),
-        "--shm-size",
-        str(settings["shm"]),
-        "--read-only",
-        "--tmpfs",
-        "/tmp:rw,nosuid,size=512m",
-        "-v",
-        f"{host_job}:/job",
-        "-e",
-        "HOME=/tmp",
-        "-e",
-        "XDG_CACHE_HOME=/tmp",
-        "-e",
-        "XDG_CONFIG_HOME=/tmp",
-        "-e",
-        "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright",
-        str(settings["image"]),
-    ]
+    # Whitelist only. Do not forward the host environment or inference keys.
+    cmd = build_docker_command(
+        sandbox_id=sandbox_id,
+        host_job=host_job,
+        settings=settings,
+    )
 
     destroyed = False
     receipts: list[dict[str, Any]] = []
@@ -290,6 +368,7 @@ def dispatch_sandbox(urls: list[str]) -> dict[str, Any]:
             text=True,
             timeout=int(settings["timeout"]),
             check=False,
+            env=docker_cli_env(),
         )
         receipts = publish_receipts(sandbox_id=sandbox_id, out_dir=out_dir, urls=urls)
         if not any(item["ok"] for item in receipts):
@@ -308,6 +387,7 @@ def dispatch_sandbox(urls: list[str]) -> dict[str, Any]:
             ["docker", "rm", "-f", sandbox_id],
             capture_output=True,
             check=False,
+            env=docker_cli_env(),
         )
         receipts = publish_receipts(sandbox_id=sandbox_id, out_dir=out_dir, urls=urls)
         if not any(item["ok"] for item in receipts):
